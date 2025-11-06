@@ -1,7 +1,7 @@
 streamlit
 numpy
 pandas
-opencv-python
+opencv-python-headless
 torch
 torchvision
 Pillow
