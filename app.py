@@ -12,9 +12,14 @@ import urllib.request
 import matplotlib.pyplot as plt
 from torchcam.methods import GradCAM
 from torchcam.utils import overlay_mask
+from sklearn.metrics import accuracy_score, precision_score, f1_score, roc_curve, auc
+from sklearn.preprocessing import label_binarize
 
+# ----------------------------------------
+# Streamlit UI Setup
+# ----------------------------------------
 st.set_page_config(page_title="Adversarial Shield App 🛡️", layout="wide")
-st.title(" Adversarial Shield Learning Simulator")
+st.title("🧠 Adversarial Shield Learning Simulator")
 
 LABELS_URL = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
 LABELS = urllib.request.urlopen(LABELS_URL).read().decode("utf-8").split("\n")
@@ -33,7 +38,9 @@ transform = transforms.Compose([
     transforms.ToTensor(),
 ])
 
-# ---------------- DEFENSES ----------------
+# ----------------------------------------
+# DEFENSES
+# ----------------------------------------
 def jpeg_compression(img, quality=50):
     _, enc = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     return cv2.imdecode(enc, 1)
@@ -59,7 +66,9 @@ def wavelet_denoising(img):
 def non_local_means(img):
     return cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
 
-# ---------------- ATTACKS ----------------
+# ----------------------------------------
+# ATTACKS
+# ----------------------------------------
 def fgsm_attack(image, epsilon, data_grad):
     sign_data_grad = data_grad.sign()
     return torch.clamp(image + epsilon * sign_data_grad, 0, 1)
@@ -89,7 +98,9 @@ def cw_attack(image, model, label, c=1e-3, iters=50):
         optimizer.step()
     return image + delta.detach()
 
-# ---------------- GradCAM Helper ----------------
+# ----------------------------------------
+# GradCAM Helper
+# ----------------------------------------
 def get_last_conv_layer(model):
     name = model.__class__.__name__.lower()
     if "resnet" in name:
@@ -110,7 +121,9 @@ def generate_gradcam(model, img_tensor, target_class):
     )
     return np.array(result)
 
-# ---------------- Confidence Plot ----------------
+# ----------------------------------------
+# Confidence Plot
+# ----------------------------------------
 def plot_confidence_bar(output, title="Prediction Confidence"):
     probs = torch.nn.functional.softmax(output, dim=1)[0]
     top5_prob, top5_catid = torch.topk(probs, 5)
@@ -122,7 +135,64 @@ def plot_confidence_bar(output, title="Prediction Confidence"):
     ax.invert_yaxis()
     st.pyplot(fig)
 
-# ---------------- Sidebar ----------------
+# ----------------------------------------
+# ROC + Metrics for top-5 classes
+# ----------------------------------------
+def evaluate_and_plot_metrics(output, model_name="Model"):
+    probs = F.softmax(output, dim=1)[0].detach().numpy()
+    top5_prob, top5_idx = torch.topk(F.softmax(output, dim=1)[0], 5)
+    top5_prob = top5_prob.detach().cpu().numpy()
+    top5_idx = top5_idx.detach().cpu().numpy()
+    top5_labels = [get_label(i) for i in top5_idx]
+    
+    # Simulate "true" as the top-1 predicted class for single-image ROC demo
+    y_true = np.zeros(len(top5_labels))
+    y_true[0] = 1
+
+    # --- Multi-class ROC plotting ---
+    fig, ax = plt.subplots(figsize=(6, 5))
+    for i, label in enumerate(top5_labels):
+        # Create a "one-vs-all" true/false for each class
+        y_true_class = np.zeros(len(top5_labels))
+        y_true_class[i] = 1
+        y_score_class = top5_prob
+
+        try:
+            fpr, tpr, _ = roc_curve(y_true_class, y_score_class)
+            roc_auc = auc(fpr, tpr)
+            ax.plot(fpr, tpr, lw=2, label=f"{label} (AUC={roc_auc:.2f})")
+        except ValueError:
+            continue
+    
+
+
+    ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
+    ax.set_title(f"ROC Curve - {model_name}")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.legend(loc="lower right")
+    st.pyplot(fig)
+
+    # Metrics (for demo with one sample)
+    y_pred = np.zeros_like(y_true)
+    y_pred[np.argmax(top5_prob)] = 1
+
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+
+    metrics_df = pd.DataFrame({
+        "Top-5 Class": top5_labels,
+        "Probability": top5_prob
+    })
+    st.dataframe(metrics_df, use_container_width=True)
+
+    
+    st.write(f"**Accuracy:** {accuracy:.2f} | **Precision:** {precision:.2f} | **F1-score:** {f1:.2f}")
+
+# ----------------------------------------
+# Sidebar Controls
+# ----------------------------------------
 st.sidebar.header("⚙️ Control Panel")
 model_choice = st.sidebar.selectbox("Model", ["resnet18", "vgg16", "densenet121"])
 attack_type = st.sidebar.selectbox("Attack Type", ["FGSM", "PGD", "CW"])
@@ -133,7 +203,9 @@ shield_type = st.sidebar.selectbox("Defense Shield", [
 epsilon = st.sidebar.slider("Epsilon (Attack Strength)", 0.001, 0.3, 0.05, step=0.01)
 uploaded_files = st.file_uploader("📸 Upload one or more images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-# ---------------- Main Logic ----------------
+# ----------------------------------------
+# MAIN LOGIC
+# ----------------------------------------
 if uploaded_files:
     model = load_model(model_choice)
     results = []
@@ -193,21 +265,24 @@ if uploaded_files:
         gradcam_orig = generate_gradcam(model, img_tensor.squeeze(), orig_pred)
         gradcam_adv = generate_gradcam(model, adv_tensor.squeeze(), adv_pred)
 
-        # Columns layout
+        # Layout columns
         col1, col2, col3 = st.columns(3)
         with col1:
             st.image(img, caption=f"🟢 Original: {orig_label}", use_container_width=True)
             st.image(gradcam_orig, caption="GradCAM (Original)")
             plot_confidence_bar(output, "Original Confidence")
+            evaluate_and_plot_metrics(output, model_choice)
 
         with col2:
             st.image(adv_img, caption=f"⚡ Adversarial ({attack_type}): {adv_label}", use_container_width=True)
             st.image(gradcam_adv, caption="GradCAM (Adversarial)")
             plot_confidence_bar(adv_output, "Adversarial Confidence")
+            evaluate_and_plot_metrics(adv_output, f"{model_choice} + {attack_type}")
 
         with col3:
             st.image(shield_img, caption=f"🛡️ Shield: {shield_type} → {shield_label}", use_container_width=True)
             plot_confidence_bar(shield_output, "Shielded Confidence")
+            evaluate_and_plot_metrics(shield_output, f"{model_choice} + {shield_type}")
 
         results.append({
             "Image": file.name,
@@ -221,19 +296,17 @@ if uploaded_files:
         })
 
     st.dataframe(pd.DataFrame(results))
-
 else:
     st.info("👆 Upload images to start your adversarial defense experiment.")
 
 with st.expander("📘 Learn More"):
     st.markdown("""
     - **FGSM**: Fast Gradient Sign Method  
-    - **PGD**: Projected Gradient Descent (iterative)  
-    - **CW**: Carlini & Wagner optimization-based attack  
-    - **JPEG Compression**: Removes high-frequency perturbations  
-    - **Wavelet Denoising**: Channel-wise wavelet noise reduction  
-    - **GradCAM**: Highlights focus regions  
-    - **Confidence Graphs**: Show how attacks & shields affect model certainty
+    - **PGD**: Projected Gradient Descent  
+    - **CW**: Carlini & Wagner Attack  
+    - **JPEG Compression / Denoising / Autoencoder Shield**: Remove perturbations  
+    - **GradCAM**: Visualizes focus areas  
+    - **ROC + Metrics**: Analyze robustness & confidence changes  
     """)
 
-st.success("✅ App ready with GradCAM + Confidence Visualization!")
+st.success("✅ App ready with ROC, Metrics & GradCAM Visualization!")
