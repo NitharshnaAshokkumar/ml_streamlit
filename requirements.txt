@@ -7,3 +7,8 @@ torchvision
 Pillow
 scikit-learn
 matplotlib
+torchcam
+PyWavelets
+
+
+
