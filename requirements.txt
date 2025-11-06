@@ -1,8 +1,9 @@
+streamlit
+numpy
+pandas
+opencv-python
 torch
 torchvision
-foolbox
-numpy
-pillow
-streamlit
-
-
+Pillow
+scikit-learn
+matplotlib
